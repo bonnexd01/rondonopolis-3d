@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rondonópolis 3D</title>
+<meta name="description" content="Modelo 3D LOD1 de Rondonópolis (MT): 112 mil edifícios extrudados pela altura medida por satélite. Canopy Forest · Cerrado.">
+<link rel="icon" href="assets/favicon.png">
+<style>
+  :root { --bg:#0b0b0b; --fg:#ece8e1; --mut:#8d8880; --red:#e0312b; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui,"Segoe UI",sans-serif; overflow:hidden; }
+  canvas { display:block; touch-action:none; }
+  #hud { position:absolute; left:14px; top:14px; max-width:340px; pointer-events:none; background:rgba(11,11,11,.78); padding:10px 14px 12px; border-radius:8px; }
+  #hud h1 { margin:0; font-size:30px; letter-spacing:.02em; font-weight:800; }
+  #hud p { margin:4px 0 0; color:var(--mut); font-size:12.5px; }
+  #hud b { color:var(--fg); font-weight:600; }
+  #leg { position:absolute; left:16px; bottom:14px; font-size:12px; color:var(--mut); background:rgba(11,11,11,.78); padding:6px 10px; border-radius:6px; }
+  #leg span { display:inline-block; width:22px; height:10px; margin-right:2px; vertical-align:middle; }
+  #ctl { position:absolute; right:16px; top:16px; display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; max-width:calc(100vw - 400px); }
+  @media (max-width: 760px) { #ctl { top:auto; bottom:48px; left:10px; right:10px; max-width:none; justify-content:center; } #busca { width:100%; } #leg { top:118px; bottom:auto; font-size:11px; } #hud p { font-size:11.5px; } }
+  #ctl button, #ctl a { background:#1a1a1a; color:var(--fg); border:1px solid #333; padding:6px 10px; border-radius:6px; cursor:pointer; font:inherit; font-size:12px; text-decoration:none; }
+  #ctl button.on { border-color:var(--red); }
+  #busca { background:#141414; color:var(--fg); border:1px solid #333; border-radius:6px; padding:6px 10px; font:inherit; font-size:12px; width:210px; }
+  #busca:focus { outline:none; border-color:var(--red); }
+  #load { position:absolute; inset:0; display:grid; place-items:center; color:var(--mut); text-align:center; }
+  #barra { width:220px; height:3px; background:#222; margin:10px auto 0; }
+  #barra i { display:block; height:100%; width:0; background:var(--red); }
+  #rod { position:absolute; right:16px; bottom:12px; text-align:right; background:rgba(11,11,11,.78); padding:8px 10px; border-radius:6px; }
+  #fonte { font-size:11px; color:#6d6862; max-width:52ch; margin-bottom:6px; }
+  #rod img { height:30px; opacity:.85; }
+  @media (max-width: 900px) { #fonte { display:none; } #hud h1 { font-size:22px; } #hud { max-width:60vw; } #rod img { height:22px; } #leg { bottom:44px; } }
+</style>
+</head>
+<body>
+<div id="load"><div>carregando 111 mil edifícios…<div id="barra"><i></i></div></div></div>
+<div id="hud">
+  <h1>RONDONÓPOLIS 3D</h1>
+  <p>Modelo LOD1 da cidade: <b id="n">–</b> edifícios extrudados pela altura medida por satélite.</p>
+  <p id="alto"></p>
+</div>
+<div id="leg"></div>
+<div id="ctl"><input id="busca" list="lugares" placeholder="buscar bairro ou avenida" autocomplete="off"><datalist id="lugares"></datalist><button id="nomes" class="on">nomes</button><button id="vruas" class="on">ruas</button><button id="rot" class="on">girar</button><button id="top">vista de cima</button><button id="centro">centro</button><a href="https://github.com/bonnexd01/rondonopolis-3d" target="_blank" rel="noopener">dados e método</a></div>
+<div id="rod">
+  <div id="fonte">Footprints: Microsoft Global ML Building Footprints (ODbL) · Ruas e bairros: © colaboradores do OpenStreetMap (ODbL) · Altura: Google Open Buildings 2.5D Temporal 2023 (CC BY 4.0) · Relevo: TOPODATA/INPE · Limite: IBGE · Método adaptado de LIS Pro 3D “3D City Modelling”</div>
+  <img src="assets/assinatura_clara.png" alt="Canopy Forest · Cerrado">
+</div>
+<script src="lib/three.min.js"></script>
+<script>
+(async () => {
+// download com progresso (os dois .bin somam ~27 MB)
+const prog = {}, barra = document.querySelector('#barra i');
+async function baixar(url) {
+  const r = await fetch(url), total = +r.headers.get('content-length') || 0, rd = r.body.getReader(), partes = [];
+  let n = 0;
+  for (;;) { const { done, value } = await rd.read(); if (done) break; partes.push(value); n += value.length;
+    prog[url] = [n, total]; const s = Object.values(prog).reduce((a, [x, t]) => [a[0] + x, a[1] + (t || x)], [0, 0]);
+    barra.style.width = (100 * s[0] / Math.max(1, s[1])).toFixed(0) + '%'; }
+  const out = new Uint8Array(n); let o = 0; for (const p of partes) { out.set(p, o); o += p.length; } return out.buffer;
+}
+const meta = await (await fetch('data/meta.json')).json();
+const [bPos, bCls, bMdt, bRP, bRC] = await Promise.all(['data/predios_pos.bin', 'data/predios_cls.bin', 'data/mdt.bin',
+  'data/ruas_pos.bin', 'data/ruas_cls.bin'].map(baixar));
+const rotulos = await (await fetch('data/rotulos.json')).json();
+const pos = new Int16Array(bPos), cls = new Uint8Array(bCls), mdtA = new Int16Array(bMdt);
+document.getElementById('load').remove();
+document.getElementById('n').textContent = meta.n_predios.toLocaleString('pt-BR');
+document.getElementById('alto').innerHTML = `Mais alto: <b>${meta.mais_alto.h.toFixed(0)} m</b> <span style="color:var(--red)">●</span>`;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputEncoding = THREE.sRGBEncoding;
+document.body.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0b0b);
+scene.fog = new THREE.Fog(0x0b0b0b, 9000, 26000);
+const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 5, 60000);
+
+// luz: sol de NO (como o hillshade 315°/45° do tutorial) + céu fraco
+scene.add(new THREE.HemisphereLight(0xdcd6cc, 0x121212, 0.55));
+const sol = new THREE.DirectionalLight(0xfff4e6, 0.9); sol.position.set(-1, 1.1, -1); scene.add(sol);
+
+// edifícios: posições Int16 * esc; cor por faixa de altura (cinzas; vermelho reservado ao destaque)
+const E = meta.esc, n = pos.length / 3;
+const P = new Float32Array(pos.length); for (let i = 0; i < pos.length; i++) P[i] = pos[i] * E;
+const pal = [[0.36,0.35,0.34],[0.50,0.49,0.47],[0.63,0.62,0.60],[0.75,0.74,0.71],[0.85,0.84,0.81],[0.93,0.92,0.89],[1,1,0.98]];
+const C = new Float32Array(n * 3); for (let i = 0; i < n; i++) { const c = pal[cls[i]]; C[i*3]=c[0]; C[i*3+1]=c[1]; C[i*3+2]=c[2]; }
+const g = new THREE.BufferGeometry();
+g.setAttribute('position', new THREE.BufferAttribute(P, 3));
+g.setAttribute('color', new THREE.BufferAttribute(C, 3));
+g.computeVertexNormals();               // triângulos soltos -> normal de face
+scene.add(new THREE.Mesh(g, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide })));
+
+// terreno (MDT 60 m)
+const M = meta.mdt, tg = new THREE.PlaneGeometry(M.w * M.res, M.h * M.res, M.w - 1, M.h - 1);
+tg.rotateX(-Math.PI / 2);
+tg.translate(M.x0 + M.w * M.res / 2, 0, -(M.y0 - M.h * M.res / 2));
+const tp = tg.attributes.position; for (let i = 0; i < tp.count; i++) tp.setY(i, mdtA[i] / 10 - 1.5);
+tg.computeVertexNormals();
+scene.add(new THREE.Mesh(tg, new THREE.MeshLambertMaterial({ color: 0x030303 })));
+
+// ruas (OSM): faixas com a largura de cada classe de via, sobre o terreno
+{
+  const rp = new Int16Array(bRP), rc = new Uint8Array(bRC), RPf = new Float32Array(rp.length);
+  for (let i = 0; i < rp.length; i++) RPf[i] = rp[i] * E;
+  const cor = [[0.86,0.82,0.75],[0.62,0.59,0.55],[0.30,0.29,0.27],[0.20,0.19,0.18]];
+  const RCf = new Float32Array(rc.length * 3); for (let i = 0; i < rc.length; i++) RCf.set(cor[rc[i]], i * 3);
+  const rg = new THREE.BufferGeometry();
+  rg.setAttribute('position', new THREE.BufferAttribute(RPf, 3)); rg.setAttribute('color', new THREE.BufferAttribute(RCf, 3));
+  const rm = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  window.__ruas = new THREE.Mesh(rg, rm); scene.add(window.__ruas);
+}
+
+// nomes: bairros (OSM place) e avenidas; aparecem conforme a câmera se aproxima
+const etiquetas = [];
+function etiqueta(r) {
+  const via = r.k === 'via', fs = via ? 30 : 34, txt = via ? r.t : r.t.toUpperCase();
+  const c = document.createElement('canvas'), x = c.getContext('2d');
+  const fonte = `${via ? 'italic 500' : '700'} ${fs}px system-ui, "Segoe UI", sans-serif`;
+  x.font = fonte; const w = Math.ceil(x.measureText(txt).width) + 24;
+  c.width = w; c.height = fs + 20; x.font = fonte; x.textBaseline = 'middle';
+  x.lineWidth = 7; x.strokeStyle = 'rgba(0,0,0,.85)'; x.strokeText(txt, 12, c.height / 2);
+  x.fillStyle = via ? '#cfc6b6' : '#f1ede6'; x.fillText(txt, 12, c.height / 2);
+  const tex = new THREE.CanvasTexture(c); tex.encoding = THREE.sRGBEncoding; tex.anisotropy = 4;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, sizeAttenuation: false, depthTest: false, transparent: true }));
+  const h = via ? 0.016 : 0.019; s.scale.set(h * c.width / c.height, h, 1);
+  s.position.set(r.x, r.y, r.z); s.renderOrder = 10; s.userData = r; scene.add(s); etiquetas.push(s);
+}
+rotulos.forEach(etiqueta);
+let mostrarNomes = true;
+
+// busca: bairro ou avenida -> leva a câmera até lá
+const lista = document.getElementById('lugares');
+[...new Set(rotulos.map(r => r.t))].sort((a, b) => a.localeCompare(b, 'pt-BR')).forEach(t => { const o = document.createElement('option'); o.value = t; lista.appendChild(o); });
+let voo = null;
+document.getElementById('busca').addEventListener('change', e => {
+  const r = rotulos.find(r => r.t.toLowerCase() === e.target.value.trim().toLowerCase()); if (!r) return;
+  voo = { de: alvo.clone(), para: new THREE.Vector3(r.x, 0, r.z), r0: raio, r1: r.k === 'via' ? 2200 : 1600, a0: alt0, a1: 0.7, t: 0 };
+  gira = false; upd(); e.target.blur();
+});
+
+// destaque: o edifício mais alto (luz vermelha + haste)
+const A = meta.mais_alto, ax = A.x, az = -A.y, ay = A.z;
+const dot = new THREE.Mesh(new THREE.SphereGeometry(14, 24, 16), new THREE.MeshBasicMaterial({ color: 0xe0312b }));
+dot.position.set(ax, ay + 60, az); scene.add(dot);
+scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(ax, ay, az), new THREE.Vector3(ax, ay + 60, az)]),
+  new THREE.LineBasicMaterial({ color: 0xe0312b })));
+const luz = new THREE.PointLight(0xe0312b, 2.2, 700); luz.position.copy(dot.position); scene.add(luz);
+
+// legenda
+const lim = meta.classes_m, nomes = [`< ${lim[0]}`, ...lim.slice(0, -1).map((v, i) => `${v}–${lim[i+1]}`), `> ${lim.at(-1)}`];
+document.getElementById('leg').innerHTML = 'altura (m)<br>' + pal.map((c, i) =>
+  `<span style="background:rgb(${c.map(v => v*255|0)})"></span>${nomes[i]}&nbsp;`).join('');
+
+// órbita: arrastar = girar; botão direito/shift = mover; roda ou pinça = zoom
+const alvo = new THREE.Vector3(0, 0, 0);
+let raio = innerWidth < 700 ? 14000 : 9000, az0 = -0.6, alt0 = 0.62, gira = true;
+const sph = () => {
+  camera.position.set(alvo.x + raio * Math.cos(alt0) * Math.sin(az0), alvo.y + raio * Math.sin(alt0), alvo.z + raio * Math.cos(alt0) * Math.cos(az0));
+  camera.lookAt(alvo);
+};
+const ptrs = new Map(); let pinca = 0;
+const cv = renderer.domElement;
+cv.addEventListener('pointerdown', e => { cv.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY, b: e.button }); gira = false; upd(); pinca = 0; });
+cv.addEventListener('pointerup', e => { ptrs.delete(e.pointerId); pinca = 0; });
+cv.addEventListener('pointercancel', e => { ptrs.delete(e.pointerId); pinca = 0; });
+cv.addEventListener('pointermove', e => {
+  const p = ptrs.get(e.pointerId); if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y; p.x = e.clientX; p.y = e.clientY;
+  if (ptrs.size === 2) {
+    const [a, b] = [...ptrs.values()], d = Math.hypot(a.x - b.x, a.y - b.y);
+    if (pinca) raio = Math.min(30000, Math.max(150, raio * pinca / d)); pinca = d; return;
+  }
+  if (p.b === 2 || e.shiftKey) {
+    const s = raio / 900, f = new THREE.Vector3(Math.sin(az0), 0, Math.cos(az0)), r = new THREE.Vector3(f.z, 0, -f.x);
+    alvo.addScaledVector(r, -dx * s).addScaledVector(f, -dy * s);
+  } else { az0 -= dx * 0.005; alt0 = Math.min(1.55, Math.max(0.08, alt0 + dy * 0.004)); }
+});
+cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('wheel', e => { raio = Math.min(30000, Math.max(150, raio * Math.exp(e.deltaY * 0.001))); }, { passive: true });
+const bR = document.getElementById('rot'), upd = () => bR.classList.toggle('on', gira);
+bR.onclick = () => { gira = !gira; upd(); };
+document.getElementById('top').onclick = () => { alt0 = 1.5; raio = 16000; alvo.set(0, 0, 0); };
+document.getElementById('centro').onclick = () => { alvo.set(ax, 0, az); raio = 1400; alt0 = 0.42; };
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+window.__cam = o => { if (o.raio) raio = o.raio; if (o.az !== undefined) az0 = o.az; if (o.alt !== undefined) alt0 = o.alt; if (o.alvo) alvo.set(...o.alvo); gira = !!o.gira; upd(); };
+window.__pronto = true;
+document.getElementById('nomes').onclick = e => { mostrarNomes = !mostrarNomes; e.target.classList.toggle('on', mostrarNomes); };
+document.getElementById('vruas').onclick = e => { window.__ruas.visible = !window.__ruas.visible; e.target.classList.toggle('on', window.__ruas.visible); };
+const cam = new THREE.Vector3();
+(function loop(t) {
+  if (gira) az0 += 0.0009;
+  if (voo) { voo.t = Math.min(1, voo.t + 0.012); const k = voo.t < .5 ? 2 * voo.t * voo.t : 1 - Math.pow(-2 * voo.t + 2, 2) / 2;
+    alvo.lerpVectors(voo.de, voo.para, k); raio = voo.r0 + (voo.r1 - voo.r0) * k; alt0 = voo.a0 + (voo.a1 - voo.a0) * k; if (voo.t >= 1) voo = null; }
+  sph();
+  cam.copy(camera.position);
+  // nomes: bairros a até 6 km da câmera, avenidas a até 7 km; sem sobreposição na tela (o mais perto ganha)
+  const cand = [];
+  for (const s of etiquetas) {
+    const d = cam.distanceTo(s.position), lim = s.userData.k === 'via' ? 7000 : 6000;
+    s.visible = false;
+    if (mostrarNomes && d < lim) { s.userData.d = d; s.userData.lim = lim; s.userData.pri = d * (s.userData.k === 'via' ? 1.4 : 1); cand.push(s); }
+  }
+  cand.sort((a, b) => a.userData.pri - b.userData.pri);
+  const caixas = [], W2 = innerWidth / 2, H2 = innerHeight / 2;
+  for (const id of ['hud', 'ctl', 'rod', 'leg']) {        // nomes não passam por baixo da interface
+    const b = document.getElementById(id).getBoundingClientRect();
+    caixas.push([b.left + b.width / 2 - W2, H2 - (b.top + b.height / 2), b.width + 8, b.height + 8]);
+  }
+  for (const s of cand) {
+    const p = s.position.clone().project(camera); if (p.z > 1) continue;
+    const P5 = camera.projectionMatrix.elements[5];       // sprite sem atenuação: tamanho na tela = escala × P[5] × meia altura
+    const w = s.scale.x * P5 * H2 + 10, h = s.scale.y * P5 * H2 + 6, x = p.x * W2, y = p.y * H2;
+    if (caixas.some(c => Math.abs(c[0] - x) < (c[2] + w) / 2 && Math.abs(c[1] - y) < (c[3] + h) / 2)) continue;
+    caixas.push([x, y, w, h]); s.visible = true; s.material.opacity = Math.min(1, (s.userData.lim - s.userData.d) / 1000);
+  }
+  const k = 1 + 0.25 * Math.sin(t / 300); dot.scale.setScalar(k); luz.intensity = 1.6 + 0.8 * Math.sin(t / 300);
+  sph(); renderer.render(scene, camera); requestAnimationFrame(loop);
+})(0);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+{
+ "osm_com_altura": 172,
+ "implausiveis_rejeitados": [
+  {
+   "nome": "Edificio Kolbe",
+   "niveis": 55.0,
+   "altura_osm": 200.0
+  }
+ ],
+ "pares_validos": 163,
+ "erro_medio_m": 0.64,
+ "erro_absoluto_mediano_m": 1.05,
+ "rmse_m": 1.94,
+ "spearman": 0.19,
+ "por_pavimentos_osm": [
+  {
+   "niveis": 2.0,
+   "count": 3,
+   "median": 11.5
+  },
+  {
+   "niveis": 4.0,
+   "count": 159,
+   "median": 12.7
+  }
+ ]
+}
